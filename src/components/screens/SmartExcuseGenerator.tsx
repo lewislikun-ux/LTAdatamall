@@ -3,16 +3,16 @@ import {
   Sparkles,
   Copy,
   Check,
-  Share2,
   RefreshCw,
   Sliders,
   Volume2,
-  MessageSquare,
-  Flame,
   Send,
   HelpCircle,
   ExternalLink,
   Info,
+  Cpu,
+  Settings,
+  ChevronDown,
 } from 'lucide-react';
 import { CommuterTrip, MeetupHotspot } from '../../types';
 import { SINGLISH_GLOSSARY } from '../../data/singaporeTransitData';
@@ -22,6 +22,8 @@ interface SmartExcuseGeneratorProps {
   youTrip: CommuterTrip;
   friendTrip: CommuterTrip;
 }
+
+export type LLMProvider = 'gemini' | 'openai' | 'anthropic' | 'groq' | 'openrouter' | 'custom';
 
 export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
   hotspot,
@@ -38,6 +40,13 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
   >('bus_drama');
   const [customPrompt, setCustomPrompt] = useState('');
 
+  // Multi-Provider & Model State
+  const [selectedProvider, setSelectedProvider] = useState<LLMProvider>('gemini');
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-2.5-flash');
+  const [customBaseUrl, setCustomBaseUrl] = useState<string>('');
+  const [overrideApiKey, setOverrideApiKey] = useState<string>('');
+  const [showModelSettings, setShowModelSettings] = useState<boolean>(false);
+
   const [generatedExcuse, setGeneratedExcuse] = useState<string>(
     `Wah ${friendName} damn jialat, bus bunching then two double-deckers just zoom past my stop sia! Finally squeezed onto Bus ${busNo}, confirm late ${delayMinutes} mins. Chope seat first can?`
   );
@@ -45,7 +54,35 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [showGlossary, setShowGlossary] = useState(false);
-  const [sourceTag, setSourceTag] = useState<'gemini' | 'template'>('template');
+  const [sourceTag, setSourceTag] = useState<string>('gemini');
+  const [activeModelName, setActiveModelName] = useState<string>('gemini-2.5-flash');
+
+  const providerModels: Record<LLMProvider, { label: string; models: string[] }> = {
+    gemini: {
+      label: 'Google Gemini',
+      models: ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'],
+    },
+    openai: {
+      label: 'OpenAI',
+      models: ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'],
+    },
+    anthropic: {
+      label: 'Anthropic Claude',
+      models: ['claude-3-5-haiku-20241022', 'claude-3-5-sonnet-20241022'],
+    },
+    groq: {
+      label: 'Groq (Ultra Fast)',
+      models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
+    },
+    openrouter: {
+      label: 'OpenRouter (Universal)',
+      models: ['meta-llama/llama-3.3-70b-instruct', 'mistralai/mistral-large-2407', 'openrouter/auto'],
+    },
+    custom: {
+      label: 'Custom OpenAI-Compatible',
+      models: ['custom-model'],
+    },
+  };
 
   const categories = [
     { id: 'bus_drama', label: '🚌 Bus Bunching', desc: 'Full buses zoomed past / slow driver' },
@@ -55,6 +92,11 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
     { id: 'unhinged', label: '🦦 Wild SG Encounters', desc: 'Otters in bus lane / void deck rooster' },
     { id: 'professional', label: '💼 Deadpan Office', desc: 'Polite corporate transit delay' },
   ];
+
+  const handleProviderChange = (newProvider: LLMProvider) => {
+    setSelectedProvider(newProvider);
+    setSelectedModel(providerModels[newProvider].models[0]);
+  };
 
   const handleGenerate = async (forcedLevel?: number) => {
     setIsLoading(true);
@@ -72,6 +114,10 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
           singlishLevel: levelToUse,
           category,
           customPrompt,
+          provider: selectedProvider,
+          model: selectedModel,
+          apiKey: overrideApiKey,
+          customBaseUrl,
         }),
       });
 
@@ -79,11 +125,11 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
       const data = await response.json();
       if (data.excuse) {
         setGeneratedExcuse(data.excuse);
-        setSourceTag(data.source || 'gemini');
+        setSourceTag(data.provider || selectedProvider);
+        setActiveModelName(data.model || selectedModel);
       }
     } catch (err) {
       console.warn('Using client-side fallback generator:', err);
-      // Client fallback
       generateClientFallback(levelToUse);
     } finally {
       setIsLoading(false);
@@ -121,7 +167,8 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
     const list = fallbacks[category] || fallbacks.bus_drama;
     const randomPick = list[Math.floor(Math.random() * list.length)];
     setGeneratedExcuse(randomPick);
-    setSourceTag('template');
+    setSourceTag('Local Engine');
+    setActiveModelName('Template');
   };
 
   const fullTrackingLink = `https://catchup.sg/track?bus=${busNo}&target=${encodeURIComponent(
@@ -155,11 +202,10 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
 
       const utterance = new SpeechSynthesisUtterance(generatedExcuse);
       utterance.rate = 1.05;
-      utterance.pitch = 1.1; // Friendly upbeat pitch
+      utterance.pitch = 1.1;
       utterance.onend = () => setIsSpeaking(false);
       utterance.onerror = () => setIsSpeaking(false);
 
-      // Try finding English or Singapore voice if available
       const voices = window.speechSynthesis.getVoices();
       const sgVoice = voices.find((v) => v.lang.includes('SG') || v.lang.includes('en-GB') || v.name.includes('Singapore'));
       if (sgVoice) utterance.voice = sgVoice;
@@ -180,18 +226,117 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
           </div>
           <h2 className="text-xl font-bold text-white tracking-tight">Smart Excuse & Delay Generator</h2>
           <p className="text-xs text-slate-400">
-            Running late because bus bunched up or CTE crawled? Generate culturally authentic, hilarious, and believable Singlish excuses in seconds!
+            Running late because bus bunched up or CTE crawled? Generate culturally authentic, hilarious, and believable Singlish excuses with any LLM model!
           </p>
         </div>
 
-        <button
-          onClick={() => setShowGlossary(!showGlossary)}
-          className="self-start sm:self-center px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-750 text-slate-300 text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
-        >
-          <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
-          <span>Singlish Slang Guide</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* LLM Model Config Button */}
+          <button
+            onClick={() => setShowModelSettings(!showModelSettings)}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Configure LLM Provider & Model"
+          >
+            <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Model:</span>
+            <span className="text-emerald-300 font-bold">{selectedModel}</span>
+            <ChevronDown className="w-3 h-3 text-slate-400" />
+          </button>
+
+          <button
+            onClick={() => setShowGlossary(!showGlossary)}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-750 text-slate-300 text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+            <span>Slang Guide</span>
+          </button>
+        </div>
       </div>
+
+      {/* Expandable Multi-Provider LLM Settings Drawer */}
+      {showModelSettings && (
+        <div className="p-4 bg-slate-900 border border-emerald-500/40 rounded-2xl space-y-3 animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <div className="flex items-center gap-2">
+              <Settings className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+                Multi-Model LLM Configuration
+              </h3>
+            </div>
+            <span className="text-[10px] text-slate-400">
+              Keys are loaded from Vercel environment variables (or test with overrides below)
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            {/* 1. Choose Provider */}
+            <div>
+              <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
+                LLM Provider
+              </label>
+              <select
+                value={selectedProvider}
+                onChange={(e) => handleProviderChange(e.target.value as LLMProvider)}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              >
+                <option value="gemini">Google Gemini (Default)</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic Claude</option>
+                <option value="groq">Groq (Ultra-Fast)</option>
+                <option value="openrouter">OpenRouter (All Models)</option>
+                <option value="custom">Custom Endpoint</option>
+              </select>
+            </div>
+
+            {/* 2. Choose Model */}
+            <div>
+              <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
+                Selected Model
+              </label>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              >
+                {providerModels[selectedProvider].models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 3. Optional Custom Base URL or Custom Model Name */}
+            <div>
+              <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
+                Custom Model / Base URL (Optional)
+              </label>
+              <input
+                type="text"
+                value={customBaseUrl}
+                onChange={(e) => setCustomBaseUrl(e.target.value)}
+                placeholder="e.g. http://localhost:11434/v1"
+                className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+          </div>
+
+          <div className="p-2.5 rounded-xl bg-slate-850 border border-slate-750 text-[11px] text-slate-300 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span>
+                Active Provider: <strong>{providerModels[selectedProvider].label}</strong> ({selectedModel})
+              </span>
+            </span>
+            <button
+              onClick={() => setShowModelSettings(false)}
+              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-semibold cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Collapsible Singlish Glossary */}
       {showGlossary && (
@@ -355,12 +500,12 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
               {isLoading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Generating with Gemini AI...</span>
+                  <span>Generating with {selectedModel}...</span>
                 </>
               ) : (
                 <>
                   <Sparkles className="w-4 h-4" />
-                  <span>Generate AI Excuse</span>
+                  <span>Generate AI Excuse ({selectedModel})</span>
                 </>
               )}
             </button>
@@ -444,10 +589,7 @@ export const SmartExcuseGenerator: React.FC<SmartExcuseGeneratorProps> = ({
                 <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                   <span>
-                    Powered by{' '}
-                    <strong className="text-slate-300">
-                      {sourceTag === 'gemini' ? 'Gemini AI (Singlish Tuning)' : 'CatchUp SG Template Engine'}
-                    </strong>
+                    Generated via <strong className="text-slate-300">{sourceTag} ({activeModelName})</strong>
                   </span>
                 </div>
               </div>

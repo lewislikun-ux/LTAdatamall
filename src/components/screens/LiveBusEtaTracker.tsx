@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Bus,
   RefreshCw,
@@ -11,6 +11,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   SlidersHorizontal,
+  Wifi,
+  Radio,
+  ExternalLink,
 } from 'lucide-react';
 import { BusStop, BusService, CommuterTrip, MeetupHotspot, LoadLevel } from '../../types';
 import { BUS_STOPS_DATA } from '../../data/singaporeTransitData';
@@ -34,53 +37,107 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
   onNavigateToExcuse,
   onNavigateToRescue,
 }) => {
-  const [selectedStopCode, setSelectedStopCode] = useState<string>(hotspot.nearestBusStopCode);
+  // Default to 04121 or nearest hotspot stop code
+  const [selectedStopCode, setSelectedStopCode] = useState<string>(
+    hotspot.nearestBusStopCode || '04121'
+  );
   const [searchQuery, setSearchQuery] = useState('');
+  const [serviceFilter, setServiceFilter] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [secondsUntilRefresh, setSecondsUntilRefresh] = useState(12);
+  const [secondsUntilRefresh, setSecondsUntilRefresh] = useState(20);
   const [expandedServiceNo, setExpandedServiceNo] = useState<string | null>('65');
   const [viewFilter, setViewFilter] = useState<'all' | 'double_decker' | 'has_seats'>('all');
 
+  // Real API state
+  const [liveServices, setLiveServices] = useState<BusService[]>([]);
+  const [apiSource, setApiSource] = useState<'lta_datamall' | 'fallback_offline'>('fallback_offline');
+  const [lastApiUpdated, setLastApiUpdated] = useState<string>('');
+
+  // Fetch from /api/bus-arrival endpoint
+  const fetchLiveBusArrival = useCallback(
+    async (stopCode: string, svcNo = '') => {
+      setRefreshing(true);
+      try {
+        let url = `/api/bus-arrival?BusStopCode=${encodeURIComponent(stopCode)}`;
+        if (svcNo) {
+          url += `&ServiceNo=${encodeURIComponent(svcNo)}`;
+        }
+
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (data.Services && Array.isArray(data.Services)) {
+          setLiveServices(data.Services);
+          setApiSource(data.source === 'lta_datamall' ? 'lta_datamall' : 'fallback_offline');
+          setLastApiUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        }
+      } catch (err) {
+        console.warn('API error, falling back to local dataset:', err);
+        const fallbackStop = BUS_STOPS_DATA.find((s) => s.code === stopCode) || BUS_STOPS_DATA[0];
+        setLiveServices(fallbackStop.services);
+        setApiSource('fallback_offline');
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    []
+  );
+
   // Update selected stop if hotspot changes
   useEffect(() => {
-    setSelectedStopCode(hotspot.nearestBusStopCode);
+    setSelectedStopCode(hotspot.nearestBusStopCode || '04121');
   }, [hotspot.nearestBusStopCode]);
 
-  // Countdown timer for live bus arrival updates
+  // Fetch when stop code or service filter changes
+  useEffect(() => {
+    fetchLiveBusArrival(selectedStopCode, serviceFilter);
+    setSecondsUntilRefresh(20);
+  }, [selectedStopCode, serviceFilter, fetchLiveBusArrival]);
+
+  // 20-second automatic refresh timer (per LTA spec)
   useEffect(() => {
     const timer = setInterval(() => {
       setSecondsUntilRefresh((prev) => {
         if (prev <= 1) {
-          return 15;
+          fetchLiveBusArrival(selectedStopCode, serviceFilter);
+          return 20;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [selectedStopCode, serviceFilter, fetchLiveBusArrival]);
 
   const handleManualRefresh = () => {
-    setRefreshing(true);
-    setTimeout(() => {
-      setRefreshing(false);
-      setSecondsUntilRefresh(15);
-    }, 600);
+    fetchLiveBusArrival(selectedStopCode, serviceFilter);
+    setSecondsUntilRefresh(20);
   };
 
-  const currentStop = BUS_STOPS_DATA.find((s) => s.code === selectedStopCode) || BUS_STOPS_DATA[0];
+  const currentStop =
+    BUS_STOPS_DATA.find((s) => s.code === selectedStopCode) || {
+      code: selectedStopCode,
+      name: `Bus Stop ${selectedStopCode}`,
+      road: 'Singapore Road Network',
+      latitude: 1.2983,
+      longitude: 103.8542,
+      services: liveServices,
+    };
 
   // Filter bus services
-  const filteredServices = currentStop.services.filter((svc) => {
-    const matchesSearch =
-      svc.serviceNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      svc.routeDescription.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      svc.operator.toLowerCase().includes(searchQuery.toLowerCase());
+  const displayedServices = (liveServices.length > 0 ? liveServices : currentStop.services).filter(
+    (svc) => {
+      const matchesSearch =
+        svc.serviceNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        svc.routeDescription.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        svc.operator.toLowerCase().includes(searchQuery.toLowerCase());
 
-    if (!matchesSearch) return false;
-    if (viewFilter === 'double_decker' && svc.nextBus.type !== 'Double Decker') return false;
-    if (viewFilter === 'has_seats' && svc.nextBus.load !== 'Seats Available') return false;
-    return true;
-  });
+      if (!matchesSearch) return false;
+      if (viewFilter === 'double_decker' && svc.nextBus.type !== 'Double Decker') return false;
+      if (viewFilter === 'has_seats' && svc.nextBus.load !== 'Seats Available') return false;
+      return true;
+    }
+  );
 
   // Calculate ETA differential
   const diffMinutes = friendTrip.etaMinutes - youTrip.etaMinutes;
@@ -107,6 +164,13 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
           dot: 'bg-rose-500',
           label: 'Limited Standing',
           short: 'LSD',
+        };
+      default:
+        return {
+          bg: 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400',
+          dot: 'bg-emerald-500',
+          label: 'Seats Avail',
+          short: 'SEA',
         };
     }
   };
@@ -304,7 +368,32 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
         </div>
       </section>
 
-      {/* 2. BUS STOP SELECTOR & LIVE ARRIVALS BOARD */}
+      {/* 2. LTA DATAMALL API STATUS STRIP */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5 px-3.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-2">
+          <Radio className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <span className="text-slate-300 font-medium">LTA v3 Endpoint:</span>
+          <span className="font-mono text-emerald-400 bg-slate-850 px-2 py-0.5 rounded border border-slate-750">
+            GET /api/bus-arrival?BusStopCode={selectedStopCode}
+          </span>
+          <span
+            className={`text-[10px] uppercase font-bold px-1.5 py-0.2 rounded ${
+              apiSource === 'lta_datamall'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+            }`}
+          >
+            {apiSource === 'lta_datamall' ? 'LTA LIVE' : '20s AUTO REFRESH'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2.5 text-slate-400 text-[11px]">
+          <span>Refreshes in: <strong className="text-emerald-400 font-mono">{secondsUntilRefresh}s</strong></span>
+          {lastApiUpdated && <span className="font-mono text-slate-400">Synced {lastApiUpdated}</span>}
+        </div>
+      </div>
+
+      {/* 3. BUS STOP SELECTOR & LIVE ARRIVALS BOARD */}
       <section className="space-y-3">
         {/* Bus Stop Switcher & Search Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -317,7 +406,7 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold text-white">{currentStop.name}</h3>
                 <span className="text-[11px] font-mono font-semibold px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                  {currentStop.code}
+                  {selectedStopCode}
                 </span>
               </div>
               <div className="text-[11px] text-slate-400">
@@ -329,13 +418,13 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
           {/* Controls: Search, Filter & Refresh */}
           <div className="flex items-center gap-2">
             {/* Search Input */}
-            <div className="relative min-w-[140px] sm:w-48">
+            <div className="relative min-w-[130px] sm:w-44">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter bus (e.g. 65)"
+                placeholder="Filter bus (e.g. 7, 65)"
                 className="w-full pl-8 pr-2.5 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
@@ -386,7 +475,11 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
 
         {/* Bus Stop Quick Tabs (Switch between nearby bus stops) */}
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
-          {BUS_STOPS_DATA.map((stop) => (
+          {/* Default 04121 + other SG hubs */}
+          {[
+            { code: '04121', name: '04121 (Default LTA Stop)' },
+            ...BUS_STOPS_DATA.map((s) => ({ code: s.code, name: s.name.split('/')[0] })),
+          ].map((stop) => (
             <button
               key={stop.code}
               onClick={() => setSelectedStopCode(stop.code)}
@@ -397,21 +490,21 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
               }`}
             >
               <span className="font-mono text-[10px] text-slate-400">{stop.code}</span>
-              <span>{stop.name.split('/')[0]}</span>
+              <span>{stop.name}</span>
             </button>
           ))}
         </div>
 
         {/* Real-time Bus Arrivals Grid */}
         <div className="space-y-2.5">
-          {filteredServices.length === 0 ? (
+          {displayedServices.length === 0 ? (
             <div className="text-center py-12 bg-slate-900/60 rounded-xl border border-slate-800 text-slate-400">
               <Bus className="w-8 h-8 mx-auto text-slate-500 mb-2 opacity-50" />
               <p className="text-sm font-medium">No bus services found matching "{searchQuery}"</p>
-              <p className="text-xs text-slate-400 mt-1">Try searching for 65, 190, 147, or clear filter.</p>
+              <p className="text-xs text-slate-400 mt-1">Try switching bus stops or refreshing.</p>
             </div>
           ) : (
-            filteredServices.map((service) => {
+            displayedServices.map((service) => {
               const isExpanded = expandedServiceNo === service.serviceNo;
               const nextLoad = getLoadBadge(service.nextBus.load);
               const subLoad = getLoadBadge(service.subsequentBus.load);
@@ -550,7 +643,7 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
 
                         <div className="p-2 rounded-lg bg-slate-850 border border-slate-750">
                           <span className="text-[10px] block text-slate-400 uppercase font-medium">Route Distance</span>
-                          <span className="font-semibold text-white">{service.stopsCount} stops total</span>
+                          <span className="font-semibold text-white">{service.stopsCount || 35} stops total</span>
                           <span className="ml-2 text-[10px] text-slate-400 font-mono">15-30m avg run</span>
                         </div>
                       </div>
@@ -563,7 +656,7 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
 
                         <div className="flex items-center gap-2">
                           <button
-                            onClick={() => onSetYouBus(service, currentStop)}
+                            onClick={() => onSetYouBus(service, currentStop as BusStop)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                               isYouBus
                                 ? 'bg-emerald-500 text-slate-950 shadow-md font-bold'
@@ -575,7 +668,7 @@ export const LiveBusEtaTracker: React.FC<LiveBusEtaTrackerProps> = ({
                           </button>
 
                           <button
-                            onClick={() => onSetFriendBus(service, currentStop)}
+                            onClick={() => onSetFriendBus(service, currentStop as BusStop)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
                               isFriendBus
                                 ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
