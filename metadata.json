@@ -1,0 +1,6 @@
+{
+  "name": "CatchUp SG — Bus Arrival & Meetup Planner",
+  "description": "Singapore real-time bus arrival synchronizer, smart Singlish delay excuse generator, and sheltered meetup spot finder.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
